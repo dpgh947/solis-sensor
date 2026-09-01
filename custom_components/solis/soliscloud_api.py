@@ -743,7 +743,7 @@ class SoliscloudAPI(BaseAPI):
         if self._session is None:
             return result
         try:
-            async with async_timeout.timeout(10):
+            async with async_timeout.timeout(45):
                 resp = await self._session.get(url, params=params)
 
                 result[STATUS_CODE] = resp.status
@@ -800,7 +800,7 @@ class SoliscloudAPI(BaseAPI):
         if self._session is None:
             return result
         try:
-            async with async_timeout.timeout(10):
+            async with async_timeout.timeout(45):
                 url = f"{self.config.domain}{canonicalized_resource}"
                 resp = await self._session.post(url, json=params, headers=header)
 
