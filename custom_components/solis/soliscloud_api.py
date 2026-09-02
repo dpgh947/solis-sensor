@@ -16,6 +16,7 @@ import hmac
 import json
 import logging
 import math
+import time                              # for the timing debug messages
 from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import Any
@@ -743,6 +744,7 @@ class SoliscloudAPI(BaseAPI):
         if self._session is None:
             return result
         try:
+            start_time = time.monotonic()
             async with async_timeout.timeout(45):
                 resp = await self._session.get(url, params=params)
 
@@ -753,8 +755,12 @@ class SoliscloudAPI(BaseAPI):
                     result[MESSAGE] = "OK"
                 else:
                     result[MESSAGE] = "Got http statuscode: %d" % (resp.status)
+                elapsed = time.monotonic() - start_time
+                _LOGGER.debug("_get_data took %.2f seconds", elapsed)
                 return result
         except (asyncio.TimeoutError, ClientError) as err:
+            elapsed = time.monotonic() - start_time
+            _LOGGER.debug("_get_data failed after %.2f seconds: %s", elapsed, err.__class__)
             result[MESSAGE] = "Exception: %s" % err.__class__
             _LOGGER.debug("Error: %s", result[MESSAGE])
             return result
@@ -800,6 +806,7 @@ class SoliscloudAPI(BaseAPI):
         if self._session is None:
             return result
         try:
+            start_time = time.monotonic()
             async with async_timeout.timeout(45):
                 url = f"{self.config.domain}{canonicalized_resource}"
                 resp = await self._session.post(url, json=params, headers=header)
@@ -811,13 +818,18 @@ class SoliscloudAPI(BaseAPI):
                     result[MESSAGE] = "OK"
                 else:
                     result[MESSAGE] = "Got http statuscode: %d" % (resp.status)
+                elapsed = time.monotonic() - start_time
+                _LOGGER.debug("_post_data_json took %.2f seconds", elapsed)
+                return result
         except (asyncio.TimeoutError, ClientError) as err:
+            elapsed = time.monotonic() - start_time
+            _LOGGER.debug("_post_data_json failed after %.2f seconds: %s", elapsed, err.__class__)
             result[MESSAGE] = f"{repr(err)}"
             _LOGGER.debug("Error from URI (%s) : %s", canonicalized_resource, result[MESSAGE])
         finally:
             if resp is not None:
                 await resp.release()
-            return result
+        return result    # taken out of finally block
 
     async def _fetch_token(self, username: str, password: str) -> str:
         """
