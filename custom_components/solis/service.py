@@ -34,7 +34,8 @@ _LOGGER = logging.getLogger(__name__)
 VERSION = "1.0.3"
 
 # Don't login every time
-HRS_BETWEEN_LOGIN = timedelta(hours=2)
+HRS_BETWEEN_LOGIN = timedelta(hours=12)
+HRS_BETWEEN_LOGIN_CONTROL = timedelta(hours=2)
 
 # Autodiscover
 RETRY_DELAY_SECONDS = 60
@@ -88,6 +89,10 @@ class InverterService:
         self._discovery_callback = None
         self._discovery_cookie: dict[str, Any] = {}
         self._discovery_complete: bool = False
+        self._discovery_scheduled: bool = False
+        self._cancel_update = None
+        self._cancel_discovery = None
+        self._shutdown = False
         self._retry_delay_seconds = 0
         self._controllable: bool = False
         self._controls: dict[str, dict[str, list[tuple]]] = {}
@@ -148,6 +153,8 @@ class InverterService:
         self._logintime = None
 
     async def async_discover(self, *_) -> None:
+        if self._shutdown:
+            return
         """Try to discover and retry if needed."""
         capabilities: dict[str, list[str]] = {}
         capabilities = await self._do_discover()
@@ -160,7 +167,7 @@ class InverterService:
             if self._discovery_callback and self._discovery_cookie:
                 self._discovery_callback(capabilities, self._discovery_cookie)
             self._retry_delay_seconds = 0
-            self._dicovery_complete = True
+            self._discovery_complete = True
         else:
             self._retry_delay_seconds = min(MAX_RETRY_DELAY_SECONDS, self._retry_delay_seconds + RETRY_DELAY_SECONDS)
             _LOGGER.warning(
@@ -168,6 +175,7 @@ class InverterService:
                 self._retry_delay_seconds,
             )
             await self._logout()
+            self._discovery_scheduled = False  # allow retry to proceed
             self.schedule_discovery(
                 self._discovery_callback,
                 self._discovery_cookie,
@@ -274,6 +282,8 @@ class InverterService:
                     subscriber.data_updated(value, self.last_updated)
 
     async def async_update(self, *_) -> None:
+        if self._shutdown:
+            return
         """Update the data from Ginlong portal."""
         update = timedelta(seconds=self._schedule_nok)
         # Login using username and password, but only every HRS_BETWEEN_LOGIN hours
@@ -289,13 +299,22 @@ class InverterService:
                     # default to updating after SCHEDULE_OK seconds;
                     update = timedelta(seconds=self._schedule_ok)
                     # ...but try to figure out a better next-update time based on when the API last received its data
-                    try:
-                        ts = getattr(data, INVERTER_TIMESTAMP_UPDATE)
-                        nxt = dt_util.utc_from_timestamp(ts) + update + timedelta(seconds=1)
-                        if nxt > dt_util.utcnow():
-                            update = nxt - dt_util.utcnow()
-                    except AttributeError:
-                        pass  # no last_update found, so keep just using SCHEDULE_OK as a safe default
+                    # also, no point in hammering the api all night if the inverter is offline, drop to a longer
+                    # interval in this case
+                    inverter_state = getattr(data, INVERTER_STATE, None)
+                    if inverter_state == 2:
+                        update = timedelta(minutes=15)
+                        _LOGGER.debug("inverter offline, defaulting to 15 minute interval")
+                    else:
+                        try:
+                            ts = getattr(data, INVERTER_TIMESTAMP_UPDATE)
+                            _LOGGER.debug("last inverter update at %s", dt_util.as_local(dt_util.utc_from_timestamp(ts)))
+                            nxt = dt_util.utc_from_timestamp(ts) + update + timedelta(seconds=15) # increased margin 1s -> 15s
+                            _LOGGER.debug("calculated next update at %s", dt_util.as_local(nxt))
+                            if nxt > dt_util.utcnow():
+                                update = nxt - dt_util.utcnow()
+                        except AttributeError:
+                            pass  # no last_update found, so keep just using SCHEDULE_OK as a safe default
                     self._last_updated = datetime.now()
                     await self.update_devices(data)
                 else:
@@ -303,29 +322,48 @@ class InverterService:
                     # Reset session and try to login again next time
                     await self._logout()
 
-        self.schedule_update(update)
+        if not self._shutdown:
+            self.schedule_update(update)
 
         if self._logintime is not None:
-            if (self._logintime + HRS_BETWEEN_LOGIN) < (datetime.now()):
+            # use longer relogin interval unless using csrf token
+            relogin_after = HRS_BETWEEN_LOGIN_CONTROL if self._controllable else HRS_BETWEEN_LOGIN
+            if (self._logintime + relogin_after) < (datetime.now()):
                 # Time to login again
                 await self._logout()
 
     def schedule_update(self, td: timedelta) -> None:
         """Schedule an update after td time."""
+        if td < timedelta(seconds=30):
+            _LOGGER.debug("Overriding short interval of %s to 30s", td)
+            td = timedelta(seconds=30)
         nxt = dt_util.utcnow() + td
-        _LOGGER.debug("Scheduling next update in %s, at %s", str(td), nxt)
-        async_track_point_in_utc_time(self._hass, self.async_update, nxt)
+        _LOGGER.debug("Scheduling next update in %s, at %s", str(td), dt_util.as_local(nxt))
+        self._cancel_update = async_track_point_in_utc_time(self._hass, self.async_update, nxt)
 
     def schedule_discovery(self, callback, cookie: dict[str, Any], seconds: int = 1):
+        # guard against duplicate discovery
+        if self._discovery_scheduled:
+            _LOGGER.debug("Discovery already scheduled, ignoring duplicate.")
+            return
+        self._discovery_scheduled = True
         """Schedule a discovery after seconds seconds."""
         _LOGGER.debug("Scheduling discovery in %s seconds.", seconds)
         self._discovery_callback = callback
         self._discovery_cookie = cookie
         nxt = dt_util.utcnow() + timedelta(seconds=seconds)
-        async_track_point_in_utc_time(self._hass, self.async_discover, nxt)
+        self._cancel_discovery = async_track_point_in_utc_time(self._hass, self.async_discover, nxt)
 
     async def shutdown(self):
         """Shutdown the service"""
+        # cancel any pending timers before logout
+        self._shutdown = True
+        if self._cancel_update is not None:
+            self._cancel_update()
+            self._cancel_update = None
+        if self._cancel_discovery is not None:
+            self._cancel_discovery()
+            self._cancel_discovery = None
         await self._logout()
 
     @property

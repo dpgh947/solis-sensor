@@ -77,6 +77,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
 
+    # guard against duplicate setup (e.g. post-startup reload)
+    if entry.entry_id in hass.data[DOMAIN]:
+        _LOGGER.debug("Entry %s already set up, skipping duplicate setup.", entry.entry_id)
+        return True
+
     config = entry.data
 
     portal_domain = config[CONF_PORTAL_DOMAIN]
@@ -141,4 +146,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     )
 
     await hass.data[DOMAIN][entry.entry_id].shutdown()
+    hass.data[DOMAIN].pop(entry.entry_id)    # clean up so reload isn't blocked by guard
     return unload_ok
