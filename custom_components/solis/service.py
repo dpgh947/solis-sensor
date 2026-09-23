@@ -34,7 +34,6 @@ _LOGGER = logging.getLogger(__name__)
 VERSION = "1.0.3"
 
 # Don't login every time
-HRS_BETWEEN_LOGIN = timedelta(hours=12)
 HRS_BETWEEN_LOGIN_CONTROL = timedelta(hours=2)
 
 # Autodiscover
@@ -78,10 +77,12 @@ class InverterService:
     """Serves all plantId's and inverters on a Ginlong account"""
 
     def __init__(
-        self, portal_config: PortalConfig, hass: HomeAssistant, refresh_ok: int = 300, refresh_nok: int = 60
+        self, portal_config: PortalConfig, hass: HomeAssistant, refresh_ok: int = 300, refresh_nok: int = 60,
+        refresh_offline: int = 15
     ) -> None:
         self._schedule_ok: int = refresh_ok
         self._schedule_nok: int = refresh_nok
+        self._schedule_offline: int = refresh_offline
         self._last_updated: datetime | None = None
         self._logintime: datetime | None = None
         self._subscriptions: dict[str, dict[str, ServiceSubscriber]] = {}
@@ -214,7 +215,15 @@ class InverterService:
             if inverters is None:
                 return capabilities
             for inverter_serial in inverters:
-                data = await self._api.fetch_inverter_data(inverter_serial, controls=False)
+                # use data cached from login call, if any. fetching it
+                # will clear it, so it will only be used once. If it isn't there
+                # then we will call the api.
+                data = self._api.pop_login_data(inverter_serial)
+                if data is None:
+                    _LOGGER.debug("discovery - no cached login data, calling api")
+                    data = await self._api.fetch_inverter_data(inverter_serial, controls=False)
+                else:
+                    _LOGGER.debug("discovery - using data cached at login")
                 if data is not None:
                     capabilities[inverter_serial] = data.keys()
         return capabilities
@@ -303,8 +312,9 @@ class InverterService:
                     # interval in this case
                     inverter_state = getattr(data, INVERTER_STATE, None)
                     if inverter_state == 2:
-                        update = timedelta(minutes=15)
-                        _LOGGER.debug("inverter offline, defaulting to 15 minute interval")
+                        update = timedelta(minutes=self._schedule_offline)
+                        _LOGGER.debug("inverter offline, using %s minute interval",
+                                      self._schedule_offline)
                     else:
                         try:
                             ts = getattr(data, INVERTER_TIMESTAMP_UPDATE)
@@ -320,23 +330,29 @@ class InverterService:
                 else:
                     update = timedelta(seconds=self._schedule_nok)
                     # Reset session and try to login again next time
-                    await self._logout()
+                    #
+                    # if we are not in control mode then "login" in soliscloud_api 
+                    # doesn't really do anything other than api calls to get
+                    # the inverter list etc., so there is no need to "logout" and re-drive that 
+                    # routine
+                    if self.controllable:
+                        await self._logout()
+                    else:
+                        _LOGGER.debug("Logoff after error skipped")
 
         if not self._shutdown:
             self.schedule_update(update)
 
-        if self._logintime is not None:
-            # use longer relogin interval unless using csrf token
-            relogin_after = HRS_BETWEEN_LOGIN_CONTROL if self._controllable else HRS_BETWEEN_LOGIN
-            if (self._logintime + relogin_after) < (datetime.now()):
-                # Time to login again
-                await self._logout()
+        if self._controllable and self._logintime is not None:
+            if (self._logintime + HRS_BETWEEN_LOGIN_CONTROL) < (datetime.now()):
+                # Time to login again, to refresh the CSRF token
+                await self._logout() 
 
     def schedule_update(self, td: timedelta) -> None:
         """Schedule an update after td time."""
-        if td < timedelta(seconds=30):
-            _LOGGER.debug("Overriding short interval of %s to 30s", td)
-            td = timedelta(seconds=30)
+        if td < timedelta(seconds=60):
+            _LOGGER.debug("Overriding short interval of %s to 60s", td)
+            td = timedelta(seconds=60)
         nxt = dt_util.utcnow() + td
         _LOGGER.debug("Scheduling next update in %s, at %s", str(td), dt_util.as_local(nxt))
         self._cancel_update = async_track_point_in_utc_time(self._hass, self.async_update, nxt)

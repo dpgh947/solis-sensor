@@ -12,6 +12,8 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import selector
+from homeassistant.helpers.selector import NumberSelector, NumberSelectorConfig, NumberSelectorMode
+
 
 from .const import (
     CONF_CONTROL,
@@ -19,6 +21,8 @@ from .const import (
     CONF_PASSWORD,
     CONF_PLANT_ID,
     CONF_PORTAL_DOMAIN,
+    CONF_REFRESH_OFFLINE,
+    CONF_TIMEOUT,
     CONF_REFRESH_NOK,
     CONF_REFRESH_OK,
     CONF_SECRET,
@@ -73,7 +77,11 @@ class SolisOptionsFlowHandler(OptionsFlow):
             updated_config[CONF_REFRESH_OK] = user_input.get(
                 CONF_REFRESH_OK, updated_config.get(CONF_REFRESH_OK, 300))
             updated_config[CONF_REFRESH_NOK] = user_input.get(
-                CONF_REFRESH_NOK, updated_config.get(CONF_REFRESH_NOK, 60)
+                CONF_REFRESH_NOK, updated_config.get(CONF_REFRESH_NOK, 60))
+            updated_config[CONF_REFRESH_OFFLINE] = user_input.get(
+                CONF_REFRESH_OFFLINE, updated_config.get(CONF_REFRESH_OFFLINE, 15))
+            updated_config[CONF_TIMEOUT] = user_input.get(
+                CONF_TIMEOUT, updated_config.get(CONF_TIMEOUT, 45)
             )
 
             self.hass.config_entries.async_update_entry(
@@ -94,9 +102,29 @@ class SolisOptionsFlowHandler(OptionsFlow):
             vol.Required(CONF_PLANT_ID, default=self.config_entry.data.get(
                 CONF_PLANT_ID, "")): cv.string,
             vol.Required(CONF_REFRESH_OK, default=self.config_entry.data.get(
-                CONF_REFRESH_OK, 300)): cv.positive_int,
+                CONF_REFRESH_OK, 300)):
+                vol.All(
+                    NumberSelector(NumberSelectorConfig(min=60, max=600, mode=NumberSelectorMode.BOX)),
+                    vol.Coerce(int),
+                ),
             vol.Required(CONF_REFRESH_NOK, default=self.config_entry.data.get(
-                CONF_REFRESH_NOK, 60)): cv.positive_int,
+                CONF_REFRESH_NOK, 60)):
+                vol.All(
+                    NumberSelector(NumberSelectorConfig(min=60, max=600, mode=NumberSelectorMode.BOX)),
+                    vol.Coerce(int),
+                ),
+            vol.Required(CONF_REFRESH_OFFLINE, default=self.config_entry.data.get(
+                CONF_REFRESH_OFFLINE, 15)):
+                vol.All(
+                    NumberSelector(NumberSelectorConfig(min=10, max=60, mode=NumberSelectorMode.BOX)),
+                    vol.Coerce(int),
+                ),
+            vol.Required(CONF_TIMEOUT, default=self.config_entry.data.get(
+                CONF_TIMEOUT, 45)):
+                vol.All(
+                    NumberSelector(NumberSelectorConfig(min=10, max=55, mode=NumberSelectorMode.BOX)),
+                    vol.Coerce(int),
+                ),
             vol.Required("Control"): data_entry_flow.section(
                 vol.Schema(
                     {
@@ -192,8 +220,26 @@ class SolisConfigFlow(ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_KEY_ID, default=""): cv.string,
             vol.Required(CONF_SECRET, default=""): cv.string,
             vol.Required(CONF_PLANT_ID, default=None): cv.string,
-            vol.Required(CONF_REFRESH_OK, default=300): cv.positive_int,
-            vol.Required(CONF_REFRESH_NOK, default=60): cv.positive_int,
+            vol.Required(CONF_REFRESH_OK, default=300):
+                vol.All(
+                    NumberSelector(NumberSelectorConfig(min=60, max=600, mode=NumberSelectorMode.BOX)),
+                    vol.Coerce(int),
+                ),
+            vol.Required(CONF_REFRESH_NOK, default=60):
+                vol.All(
+                    NumberSelector(NumberSelectorConfig(min=60, max=600, mode=NumberSelectorMode.BOX)),
+                    vol.Coerce(int),
+                ),
+            vol.Required(CONF_REFRESH_OFFLINE, default=15):
+                vol.All(
+                    NumberSelector(NumberSelectorConfig(min=10, max=60, mode=NumberSelectorMode.BOX)),
+                    vol.Coerce(int),
+                ),
+            vol.Required(CONF_TIMEOUT, default=45):
+                vol.All(
+                    NumberSelector(NumberSelectorConfig(min=10, max=55, mode=NumberSelectorMode.BOX)),
+                    vol.Coerce(int),
+                ),
             vol.Required("Control"): data_entry_flow.section(
                 vol.Schema(
                     {

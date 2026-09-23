@@ -266,6 +266,7 @@ class SoliscloudConfig(PortalConfig):
         portal_secret: bytes,
         portal_plantid: str,
         portal_password: str,
+        portal_timeout: int = 45,
     ) -> None:
         super().__init__(
             portal_domain,
@@ -276,7 +277,8 @@ class SoliscloudConfig(PortalConfig):
         self._secret: bytes = portal_secret
         self._workarounds = {}
         self._password: str = portal_password
-
+        self._timeout: int = portal_timeout
+        
     async def load_workarounds(self):
         try:
             async with aiofiles.open("/config/custom_components/solis/workarounds.yaml", "r") as file:
@@ -301,6 +303,11 @@ class SoliscloudConfig(PortalConfig):
         """Return all workaround settings"""
         return self._workarounds
 
+    @property
+    def timeout(self) -> int:
+        """Request timeout in seconds."""
+        return self._timeout
+
 
 class SoliscloudAPI(BaseAPI):
     """Class with functions for reading data from the Soliscloud Portal."""
@@ -313,6 +320,13 @@ class SoliscloudAPI(BaseAPI):
         self._inverter_list: dict[str, str] | None = None
         self._token = ""
         self._hmi_fb00 = {}
+        # to save the data returned during login so it is used,
+        # avoiding extra api calls at initialisation
+        self._login_data: dict[str, GinlongData] = {}
+        # to avoid get_station_details call if inverter last update hasn't changed,
+        # use previous data instead
+        self._station_data = {}
+        self._inverter_timestamp = {}
 
     @property
     def api_name(self) -> str:
@@ -331,6 +345,13 @@ class SoliscloudAPI(BaseAPI):
     def is_online(self) -> bool:
         """Returns if we are logged in."""
         return self._is_online
+
+    # streamline startup by using the data returned from the initial calls,
+    # instead of binning them and then calling again straight away. This
+    # retrieves any saved data and clears it
+    def pop_login_data(self, inverter_serial: str) -> GinlongData | None:
+        """Return and clear data cached during login's validation fetch, if any."""
+        return self._login_data.pop(inverter_serial, None)
 
     async def login(self, session: ClientSession) -> bool:
         """See if we can build a list of inverters"""
@@ -353,6 +374,9 @@ class SoliscloudAPI(BaseAPI):
                 data = await self.fetch_inverter_data(inv)
                 try:
                     self._plant_name = getattr(data, INVERTER_PLANT_NAME)
+                    # save the data for use in first retrieval,
+                    # avoiding unnecessary api calls during startup
+                    self._login_data[inv] = data
                 except AttributeError:
                     _LOGGER.info("No access to inverter %s, removing", inv)
                     del self._inverter_list[inv]
@@ -432,12 +456,33 @@ class SoliscloudAPI(BaseAPI):
             if self._inverter_list is not None and inverter_serial in self._inverter_list:
                 device_id = self._inverter_list[inverter_serial]
                 # Throttle http calls to avoid 502 error
-                await asyncio.sleep(1)
+                #await asyncio.sleep(1)
                 payload = await self._get_inverter_details(device_id, inverter_serial)
-                await asyncio.sleep(1)
-                payload_detail = await self._get_station_details(self.config.plant_id)
+                #await asyncio.sleep(1)
+                #payload_detail = await self._get_station_details(self.config.plant_id)
+                #if payload is not None:
+                    #self._collect_inverter_data(payload)
+                
+                # after calling get_inverter_details, if the last inverter update timestamp
+                # has not changed, avoid the pointless call to get_station_details which 
+                # we now know is going to return the same stale data, and fill it in with the
+                # last data saved from the last time it was called instead
+                payload_detail = None
                 if payload is not None:
                     self._collect_inverter_data(payload)
+                    inverter_timestamp = self._data.get(INVERTER_TIMESTAMP_UPDATE)
+                    if (
+                        inverter_timestamp is not None
+                        and inverter_timestamp != self._inverter_timestamp.get(inverter_serial)
+                    ):
+                        payload_detail = await self._get_station_details(self.config.plant_id)
+
+                        if payload_detail is not None:
+                            self._station_data[inverter_serial] = payload_detail
+                            self._inverter_timestamp[inverter_serial] = inverter_timestamp
+                    else:
+                        _LOGGER.debug("inverter has not updated, using cached station data")
+                        payload_detail = self._station_data.get(inverter_serial)
                     if inverter_serial not in self._hmi_fb00:
                         hmi_flag = self._data[HMI_VERSION_ALL]
                         self._hmi_fb00[inverter_serial] = int(hmi_flag, 16) >= int("4b00", 16)
@@ -745,7 +790,7 @@ class SoliscloudAPI(BaseAPI):
             return result
         try:
             start_time = time.monotonic()
-            async with async_timeout.timeout(45):
+            async with async_timeout.timeout(self.config.timeout):
                 resp = await self._session.get(url, params=params)
 
                 result[STATUS_CODE] = resp.status
@@ -807,7 +852,8 @@ class SoliscloudAPI(BaseAPI):
             return result
         try:
             start_time = time.monotonic()
-            async with async_timeout.timeout(45):
+            async with async_timeout.timeout(self.config.timeout):
+                _LOGGER.debug("calling %s", canonicalized_resource)
                 url = f"{self.config.domain}{canonicalized_resource}"
                 resp = await self._session.post(url, json=params, headers=header)
 
@@ -819,7 +865,7 @@ class SoliscloudAPI(BaseAPI):
                 else:
                     result[MESSAGE] = "Got http statuscode: %d" % (resp.status)
                 elapsed = time.monotonic() - start_time
-                _LOGGER.debug("_post_data_json took %.2f seconds", elapsed)
+                _LOGGER.debug("_post_data_json took %.2f seconds, timeout is %s", elapsed, self.config.timeout)
                 return result
         except (asyncio.TimeoutError, ClientError) as err:
             elapsed = time.monotonic() - start_time
