@@ -1,5 +1,28 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg?style=for-the-badge)](https://github.com/hacs/integration)
 
+######################################################################################################################
+######################################################################################################################
+######################################################################################################################
+
+>❗ATTENTION
+This is an unsupported fork that I created for my own use/education/tinkering at a time when it looked like the original was no longer being maintained. I started work in mainframe IT about 47 years ago, but I have only just started learning python and the intricacies of git and github while looking at this code, so if I have done something odd in the code or in the git process admin, that's why.
+
+I am using this code on my system and it is working fine and addresses several problems I encountered and found, but if you wish to use it, you do so entirely at your own risk and with the understanding that I do not plan to support this going forward, I do not have the time, so I will most likely not respond to issues raised here, or produce fixes or releases. I think it will work on systems that use the control mode, but I do not use this and so I cannot test it.
+
+In addition to the base function at the time I forked (v4.0.1), this fork provides:
+
+* new config settings for the api call timeout value, and a new offline interval value, which defines the interval between api calls when the inverter is offline - there is no point calling the api every 5 minutes or even every minute on some systems all through the night when the inverter is offline. I am currently running with this set at 20 minutes, it works well and hugely reduces api traffic overnight. I introduced range limits on these and on the existing schedule intervals, mainly as an exercise.
+* avoiding multiple api scheduling threads being created as a result of the integration being reloaded.
+* lots of additional debug messages particularly around api call timings.
+* reduction of api traffic - as well as the "offline" interval, improved calculation of when next inverter update will be, reduced unnecessary or "wasted" api calls, implemented minimum interval between api calls of 1 minute, removed "logout" when there is no real "login", this avoids the pointless redriving of the inverterlist/inverterdetails calls after an error.
+* other minor fixes - "dicovery" typo and return in a finally block.
+
+NOTE: since I worked on this, the original has now been partially fixed, v4.0.3 now contains similar exposure of the api timeout in the config, it does not contain the additional offline interval or the duplicate discovery thread fix or the other api use reduction that I have achieved.
+
+######################################################################################################################
+######################################################################################################################
+######################################################################################################################
+
 >❗As from release 4.0.0 the legacy Ginlong v2 API support has been removed. If you still use the integration for some MyEvolvecloud legacy endpoint using the v2 API then stick to the v3.x versions or fork
 
 # SolisCloud sensor integration
